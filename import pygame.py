@@ -1,0 +1,1408 @@
+import pygame
+import sys
+import random
+
+pygame.init()
+pygame.mixer.init()
+
+# ===================== ПУТЬ =====================
+BASE = r"C:\Users\user\Documents\Новая папка"
+
+# ===================== МУЗЫКА / SFX =====================
+MUSIC_FILE = BASE + r"\Запись экрана 2025-12-16 150516 (online-audio-converter.com).mp3"
+SWORD_SFX_FILE = BASE + r"\metal-sound-fighting-game-87507.mp3"
+
+try:
+    SWORD_SFX = pygame.mixer.Sound(SWORD_SFX_FILE)
+except Exception as e:
+    SWORD_SFX = None
+    print("Не загрузился звук меча:", e)
+
+SWORD_CHANNEL = pygame.mixer.Channel(1)
+
+
+def ensure_music_playing(volume_level: float):
+    try:
+        if not pygame.mixer.music.get_busy():
+            pygame.mixer.music.load(MUSIC_FILE)
+            pygame.mixer.music.set_volume(volume_level)
+            pygame.mixer.music.play(-1)
+    except Exception as e:
+        print("Музыка не загрузилась:", e)
+
+
+# ===================== ФОНЫ =====================
+MENU_BG_FILE = BASE + r"\menu_main.png"
+SETTINGS_BG_FILE = BASE + r"\settings_menu.png"
+BG_FILE = BASE + r"\background2.png"
+
+menu_bg_original = pygame.image.load(MENU_BG_FILE)
+settings_bg_original = pygame.image.load(SETTINGS_BG_FILE)
+fight_bg_original = pygame.image.load(BG_FILE)
+
+BASE_WIDTH, BASE_HEIGHT = menu_bg_original.get_size()
+
+# ===================== ОКНО =====================
+info = pygame.display.Info()
+WIDTH, HEIGHT = info.current_w, info.current_h
+fullscreen = False
+
+WORLD_WIDTH = int(WIDTH * 12.0)
+
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Star Wars (Your Universe)")
+
+menu_bg = pygame.transform.scale(menu_bg_original, (WIDTH, HEIGHT)).convert()
+settings_bg = pygame.transform.scale(settings_bg_original, (WIDTH, HEIGHT)).convert()
+fight_bg = pygame.transform.scale(fight_bg_original, (WIDTH, HEIGHT)).convert()
+
+clock = pygame.time.Clock()
+
+# ===================== ШРИФТЫ =====================
+FONT_BIG = pygame.font.SysFont("arial", 56, bold=True)
+FONT_MED = pygame.font.SysFont("arial", 28, bold=True)
+FONT_SMALL = pygame.font.SysFont("arial", 20, bold=True)
+
+try:
+    FONT_DIALOG = pygame.font.Font(BASE + r"\PressStart2P-Regular.ttf", 20)
+    FONT_DIALOG_HINT = pygame.font.Font(BASE + r"\PressStart2P-Regular.ttf", 14)
+    FONT_DIALOG_NAME = pygame.font.Font(BASE + r"\PressStart2P-Regular.ttf", 16)
+except Exception:
+    FONT_DIALOG = pygame.font.SysFont("consolas", 20, bold=True)
+    FONT_DIALOG_HINT = pygame.font.SysFont("consolas", 14, bold=True)
+    FONT_DIALOG_NAME = pygame.font.SysFont("consolas", 16, bold=True)
+
+# ===================== ГРОМКОСТЬ =====================
+volume_level = 0.7
+pygame.mixer.music.set_volume(volume_level)
+
+
+def update_sfx_volume():
+    if SWORD_SFX is not None:
+        SWORD_SFX.set_volume(max(0.0, min(1.0, volume_level * 0.9)))
+
+
+update_sfx_volume()
+
+# ===================== FULLSCREEN =====================
+def toggle_fullscreen():
+    global fullscreen, screen, WIDTH, HEIGHT, menu_bg, settings_bg, fight_bg, WORLD_WIDTH
+
+    fullscreen = not fullscreen
+    if fullscreen:
+        info_local = pygame.display.Info()
+        WIDTH, HEIGHT = info_local.current_w, info_local.current_h
+        screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
+    else:
+        WIDTH, HEIGHT = BASE_WIDTH, BASE_HEIGHT
+        screen = pygame.display.set_mode((WIDTH, HEIGHT))
+
+    WORLD_WIDTH = int(WIDTH * 12.0)
+
+    menu_bg = pygame.transform.scale(menu_bg_original, (WIDTH, HEIGHT)).convert()
+    settings_bg = pygame.transform.scale(settings_bg_original, (WIDTH, HEIGHT)).convert()
+    fight_bg = pygame.transform.scale(fight_bg_original, (WIDTH, HEIGHT)).convert()
+
+
+def handle_global_keys(event):
+    if event.type == pygame.KEYDOWN:
+        if event.key == pygame.K_RETURN and (event.mod & pygame.KMOD_ALT):
+            toggle_fullscreen()
+            return True
+        if event.key == pygame.K_F11:
+            toggle_fullscreen()
+            return True
+    return False
+
+
+# ===================== FADE TELEPORT =====================
+def fade_transition(draw_world_fn, mid_action_fn=None, fade_ms=320):
+    overlay = pygame.Surface((WIDTH, HEIGHT))
+
+    t0 = pygame.time.get_ticks()
+    while True:
+        now = pygame.time.get_ticks()
+        k = (now - t0) / max(1, fade_ms)
+        if k >= 1.0:
+            k = 1.0
+        draw_world_fn()
+        overlay.set_alpha(int(255 * k))
+        overlay.fill((0, 0, 0))
+        screen.blit(overlay, (0, 0))
+        pygame.display.flip()
+        clock.tick(60)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            handle_global_keys(event)
+        if k >= 1.0:
+            break
+
+    if mid_action_fn:
+        mid_action_fn()
+
+    t0 = pygame.time.get_ticks()
+    while True:
+        now = pygame.time.get_ticks()
+        k = (now - t0) / max(1, fade_ms)
+        if k >= 1.0:
+            k = 1.0
+        draw_world_fn()
+        overlay.set_alpha(int(255 * (1.0 - k)))
+        overlay.fill((0, 0, 0))
+        screen.blit(overlay, (0, 0))
+        pygame.display.flip()
+        clock.tick(60)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            handle_global_keys(event)
+        if k >= 1.0:
+            break
+
+
+# ===================== ТЕКСТ WRAP =====================
+def wrap_text(font, text, max_width):
+    words = text.split(" ")
+    lines = []
+    cur = ""
+    for w in words:
+        test = (cur + " " + w) if cur else w
+        if font.size(test)[0] <= max_width:
+            cur = test
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def speaker_color(name):
+    if name == "Джедай":
+        return (0, 220, 255)
+    if name == "ГГ":
+        return (255, 255, 0)
+    if name == "Граф Дуку":
+        return (180, 180, 255)
+    if name == "Связь":
+        return (0, 255, 160)
+    return (255, 255, 255)
+
+
+# ===================== ДИАЛОГ ПАНЕЛЬ =====================
+def draw_dialog_panel(surf, speaker, full_text, visible_chars, anim):
+    if not full_text:
+        return
+
+    bar_h = int(HEIGHT * 0.24)
+    target_y = int(HEIGHT * 0.08)
+    start_y = -bar_h
+    anim = max(0.0, min(1.0, anim))
+    bar_y = start_y + (target_y - start_y) * anim
+
+    margin_x = 18
+    rect = pygame.Rect(margin_x, bar_y, WIDTH - margin_x * 2, bar_h)
+
+    panel = pygame.Surface(rect.size, pygame.SRCALPHA)
+    panel.fill((0, 0, 0, 190))
+    surf.blit(panel, rect.topleft)
+
+    pygame.draw.rect(surf, (0, 200, 255), rect, 2)
+    inner_rect = rect.inflate(-6, -6)
+    pygame.draw.rect(surf, (40, 40, 80), inner_rect, 2)
+
+    px = rect.x + 16
+    py = rect.y + 12
+
+    if speaker:
+        col = speaker_color(speaker)
+        name_s = FONT_DIALOG_NAME.render(speaker + ":", True, col)
+        surf.blit(name_s, (px, py))
+        ty = py + name_s.get_height() + 8
+    else:
+        ty = py
+
+    visible_text = full_text[:max(0, min(int(visible_chars), len(full_text)))]
+    max_w = rect.width - 32
+    lines = wrap_text(FONT_DIALOG, visible_text, max_w)
+    for line in lines[:5]:
+        t = FONT_DIALOG.render(line, True, (255, 255, 255))
+        surf.blit(t, (px, ty))
+        ty += t.get_height() + 4
+
+    hint = FONT_DIALOG_HINT.render("SPACE — далее", True, (200, 200, 200))
+    surf.blit(hint, (rect.right - hint.get_width() - 14, rect.bottom - hint.get_height() - 10))
+
+
+# ===================== СПРАЙТЫ =====================
+PLAYER_SCALE = 0.75
+
+
+def load_img(name):
+    return pygame.image.load(BASE + "\\" + name).convert_alpha()
+
+
+def max_bbox_after_scale(frames, scale):
+    mw = mh = 1
+    for fr in frames:
+        s = pygame.transform.scale_by(fr, scale)
+        r = s.get_bounding_rect(min_alpha=1)
+        w = r.width if r.width > 0 else s.get_width()
+        h = r.height if r.height > 0 else s.get_height()
+        mw = max(mw, w)
+        mh = max(mh, h)
+    return mw, mh
+
+
+def fit_bottom_center(original: pygame.Surface, scale: float, canvas_size):
+    scaled = pygame.transform.scale_by(original, scale)
+    r = scaled.get_bounding_rect(min_alpha=1)
+    cropped = scaled.subsurface(r).copy() if (r.width > 0 and r.height > 0) else scaled.copy()
+
+    cw, ch = canvas_size
+    canvas = pygame.Surface((cw, ch), pygame.SRCALPHA)
+    x = (cw - cropped.get_width()) // 2
+    y = ch - cropped.get_height()
+    canvas.blit(cropped, (x, y))
+    return canvas
+
+
+player_idle_raw = load_img("mal1.png")
+player_walk_raw = [load_img("mal2.png"), load_img("mal3.png"), load_img("mal4.png")]
+player_attack_raw = [load_img("mal_lick.png"), load_img("mal_lick2.png")]
+
+PLAYER_CANVAS = max_bbox_after_scale([player_idle_raw] + player_walk_raw + player_attack_raw, PLAYER_SCALE)
+
+idle_right_img = fit_bottom_center(player_idle_raw, PLAYER_SCALE, PLAYER_CANVAS)
+idle_left_img = pygame.transform.flip(idle_right_img, True, False)
+
+walk_frames_right_base = [fit_bottom_center(fr, PLAYER_SCALE, PLAYER_CANVAS) for fr in player_walk_raw]
+walk_frames_left_base = [pygame.transform.flip(fr, True, False) for fr in walk_frames_right_base]
+walk_order = [0, 1, 2, 1]
+walk_right_imgs = [walk_frames_right_base[i] for i in walk_order]
+walk_left_imgs = [walk_frames_left_base[i] for i in walk_order]
+
+attack_frames_right_base = [fit_bottom_center(fr, PLAYER_SCALE, PLAYER_CANVAS) for fr in player_attack_raw]
+attack_frames_left_base = [pygame.transform.flip(fr, True, False) for fr in attack_frames_right_base]
+hit_order = [0, 1, 0]
+hit_right_imgs = [attack_frames_right_base[i] for i in hit_order]
+hit_left_imgs = [attack_frames_left_base[i] for i in hit_order]
+
+
+bot_files = ["1.png", "2.png", "3.png", "4.png", "5.png", "6.png", "7.png"]
+bot_raw = [load_img(f) for f in bot_files]
+
+p_h = player_idle_raw.get_bounding_rect(min_alpha=1).height or player_idle_raw.get_height()
+b_h = bot_raw[0].get_bounding_rect(min_alpha=1).height or bot_raw[0].get_height()
+BOT_SCALE = ((p_h * PLAYER_SCALE) * 1.05) / max(1, b_h)
+
+BOT_CANVAS = max_bbox_after_scale(bot_raw, BOT_SCALE)
+
+bot_walk_right_imgs = [fit_bottom_center(fr, BOT_SCALE, BOT_CANVAS) for fr in bot_raw]
+bot_walk_left_imgs = [pygame.transform.flip(fr, True, False) for fr in bot_walk_right_imgs]
+bot_idle_right_img = bot_walk_right_imgs[0]
+bot_idle_left_img = bot_walk_left_imgs[0]
+
+
+BOSS_SCALE = PLAYER_SCALE
+
+boss_idle_raw = load_img("mal1.png")
+boss_walk_raw = [load_img("mal2.png"), load_img("mal3.png"), load_img("mal4.png")]
+boss_attack_raw = [load_img("mal_lick.png"), load_img("mal_lick2.png")]
+
+BOSS_CANVAS = max_bbox_after_scale([boss_idle_raw] + boss_walk_raw + boss_attack_raw, BOSS_SCALE)
+
+boss_idle_right = fit_bottom_center(boss_idle_raw, BOSS_SCALE, BOSS_CANVAS)
+boss_idle_left = pygame.transform.flip(boss_idle_right, True, False)
+
+boss_walk_right_base = [fit_bottom_center(fr, BOSS_SCALE, BOSS_CANVAS) for fr in boss_walk_raw]
+boss_walk_left_base = [pygame.transform.flip(fr, True, False) for fr in boss_walk_right_base]
+boss_walk_order = [0, 1, 2, 1]
+boss_walk_right = [boss_walk_right_base[i] for i in boss_walk_order]
+boss_walk_left = [boss_walk_left_base[i] for i in boss_walk_order]
+
+boss_attack_right = [fit_bottom_center(fr, BOSS_SCALE, BOSS_CANVAS) for fr in boss_attack_raw]
+boss_attack_left = [pygame.transform.flip(fr, True, False) for fr in boss_attack_right]
+
+
+# ===================== ДОРОЖКИ (ПОД background2) =====================
+GROUND_Y_FRAC = 0.75
+GROUND_Y = int(HEIGHT * GROUND_Y_FRAC)
+LANE_OFFSET = 45
+lanes = [GROUND_Y - LANE_OFFSET, GROUND_Y, GROUND_Y + LANE_OFFSET]
+
+FOOT_PAD = 4
+PLAYER_Y_OFFSET = -idle_right_img.get_height() + FOOT_PAD
+BOT_Y_OFFSET = -bot_idle_right_img.get_height() + FOOT_PAD
+BOSS_Y_OFFSET = -boss_idle_right.get_height() + FOOT_PAD
+
+
+# ===================== ПАРТИКЛЫ/ХП ШАРЫ =====================
+class DustParticle:
+    def __init__(self, x, y):
+        self.x = float(x)
+        self.y = float(y)
+        self.vx = random.uniform(-2.0, 2.0)
+        self.vy = random.uniform(-4.0, -1.0)
+        self.g = 0.22
+        self.life = random.randint(18, 32)
+        self.size = random.randint(2, 4)
+
+    def update(self):
+        self.vy += self.g
+        self.x += self.vx
+        self.y += self.vy
+        self.life -= 1
+
+    def draw(self, surf, camera_x):
+        if self.life <= 0:
+            return
+        sx = int(self.x - camera_x)
+        sy = int(self.y)
+        if -30 < sx < WIDTH + 30 and -30 < sy < HEIGHT + 30:
+            pygame.draw.rect(surf, (220, 190, 90), (sx, sy, self.size, self.size))
+
+    @property
+    def alive(self):
+        return self.life > 0
+
+
+class HealthDrop:
+    def __init__(self, x, y, heal_amount=18):
+        self.x = float(x)
+        self.y = float(y)
+        self.vx = random.uniform(-1.2, 1.2)
+        self.vy = random.uniform(-3.8, -2.0)
+        self.g = 0.25
+        self.radius = 9
+        self.heal_amount = heal_amount
+        self.active = True
+        self.life_ms = 12000
+        self.spawn_time = pygame.time.get_ticks()
+
+    def update(self):
+        if not self.active:
+            return
+        self.vy += self.g
+        self.x += self.vx
+        self.y += self.vy
+
+        ground_y = lanes[1] + 8
+        if self.y > ground_y:
+            self.y = ground_y
+            self.vy *= -0.35
+            self.vx *= 0.85
+
+        if pygame.time.get_ticks() - self.spawn_time > self.life_ms:
+            self.active = False
+
+    def try_pickup(self, player):
+        if not self.active or not player.alive:
+            return False
+
+        px = player.get_center_x()
+        py = player.y + player.current_sprite.get_height() * 0.55
+
+        dx = (self.x - px)
+        dy = (self.y - py)
+        if (dx * dx + dy * dy) <= (48 * 48):
+            player.hp = min(player.hp_max, player.hp + self.heal_amount)
+            self.active = False
+            return True
+        return False
+
+    def draw(self, surf, camera_x):
+        if not self.active:
+            return
+        sx = int(self.x - camera_x)
+        sy = int(self.y)
+
+        t = pygame.time.get_ticks() - self.spawn_time
+        if self.life_ms - t < 1500:
+            if (pygame.time.get_ticks() // 120) % 2 == 0:
+                return
+
+        pygame.draw.circle(surf, (0, 255, 120), (sx, sy), self.radius)
+        pygame.draw.circle(surf, (0, 120, 60), (sx, sy), self.radius, 2)
+
+
+def spawn_death_effects(x, y, particles, drops):
+    for _ in range(18):
+        particles.append(DustParticle(x, y))
+    if random.random() < 0.65:
+        drops.append(HealthDrop(x, y, heal_amount=18))
+    if random.random() < 0.15:
+        drops.append(HealthDrop(x + random.randint(-12, 12), y, heal_amount=12))
+
+
+# ===================== ПУЛИ =====================
+class Bullet:
+    def __init__(self, x, y, vx, damage, lane_index):
+        self.x = float(x)
+        self.y = float(y)
+        self.vx = float(vx)
+        self.damage = int(damage)
+        self.radius = 6
+        self.active = True
+        self.lane_index = lane_index
+
+    def update(self, player):
+        if not self.active:
+            return
+        self.x += self.vx
+        if self.x < -80 or self.x > WORLD_WIDTH + 80:
+            self.active = False
+            return
+
+        if player.alive and player.lane_index == self.lane_index:
+            player_rect = player.current_sprite.get_rect(topleft=(player.x, player.y))
+            if player_rect.collidepoint(int(self.x), int(self.y)):
+                player.take_damage(self.damage)
+                self.active = False
+
+    def draw(self, surf, camera_x):
+        if not self.active:
+            return
+        sx = int(self.x - camera_x)
+        sy = int(self.y)
+        if -60 < sx < WIDTH + 60:
+            pygame.draw.circle(surf, (255, 255, 0), (sx, sy), self.radius)
+
+
+# ===================== ИГРОК =====================
+class Player:
+    def __init__(self):
+        self.x = 200
+        self.lane_index = 1
+        self.y = lanes[self.lane_index] + PLAYER_Y_OFFSET
+
+        self.speed_x = 4
+
+        self.frame_walk = 0.0
+        self.frame_hit = 0.0
+        self.walk_speed = 0.12
+        self.hit_speed = 0.22
+
+        self.facing_right = True
+        self.attacking = False
+        self.moving = False
+
+        self.current_sprite = idle_right_img
+
+        self.hp_max = 150
+        self.hp = self.hp_max
+        self.alive = True
+
+        self.hit_registered = False
+        self.attack_range = 60
+        self.damage = 26
+
+        self.defense = 2
+
+    def reset(self):
+        self.x = 200
+        self.lane_index = 1
+        self.y = lanes[self.lane_index] + PLAYER_Y_OFFSET
+        self.hp = self.hp_max
+        self.alive = True
+        self.attacking = False
+        self.moving = False
+        self.frame_walk = 0.0
+        self.frame_hit = 0.0
+        self.hit_registered = False
+        self.facing_right = True
+        self.current_sprite = idle_right_img
+
+    def start_attack(self):
+        if self.alive and not self.attacking:
+            self.attacking = True
+            self.frame_hit = 0.0
+            self.hit_registered = False
+
+    def change_lane(self, direction):
+        if direction == -1 and self.lane_index > 0:
+            self.lane_index -= 1
+        elif direction == 1 and self.lane_index < 2:
+            self.lane_index += 1
+        self.y = lanes[self.lane_index] + PLAYER_Y_OFFSET
+
+    def get_center_x(self):
+        return self.x + self.current_sprite.get_width() / 2
+
+    def take_damage(self, amount):
+        if not self.alive:
+            return
+        real = max(1, int(amount) - self.defense)
+        self.hp -= real
+        if self.hp <= 0:
+            self.hp = 0
+            self.alive = False
+
+    def update(self, keys, can_control=True):
+        if not self.alive:
+            self.moving = False
+        else:
+            self.moving = False
+            if can_control and not self.attacking:
+                if keys[pygame.K_d]:
+                    self.x += self.speed_x
+                    self.moving = True
+                    self.facing_right = True
+                if keys[pygame.K_a]:
+                    self.x -= self.speed_x
+                    self.moving = True
+                    self.facing_right = False
+                self.x = max(0, min(self.x, WORLD_WIDTH - self.current_sprite.get_width()))
+
+        if self.attacking:
+            self.frame_hit += self.hit_speed
+            hit_list = hit_right_imgs if self.facing_right else hit_left_imgs
+            if self.frame_hit >= len(hit_list):
+                self.frame_hit = 0.0
+                self.attacking = False
+            self.current_sprite = hit_list[int(self.frame_hit)]
+        else:
+            if self.moving:
+                self.frame_walk += self.walk_speed
+                walk_list = walk_right_imgs if self.facing_right else walk_left_imgs
+                if self.frame_walk >= len(walk_list):
+                    self.frame_walk = 0.0
+                self.current_sprite = walk_list[int(self.frame_walk)]
+            else:
+                self.frame_walk = 0.0
+                self.current_sprite = idle_right_img if self.facing_right else idle_left_img
+
+    def draw(self, surf, camera_x):
+        surf.blit(self.current_sprite, (self.x - camera_x, self.y))
+
+
+# ===================== БОТ =====================
+class Bot:
+    def __init__(self, x, lane_index, hp=85, damage=6, speed=2.2):
+        self.x = float(x)
+        self.lane_index = lane_index
+
+        self.ground_y = lanes[self.lane_index] + BOT_Y_OFFSET
+        self.y = -140
+        self.fall_speed = random.randint(10, 14)
+        self.falling = True
+
+        self.speed_x = float(speed)
+        self.hp = int(hp)
+        self.damage = int(damage)
+        self.alive = True
+
+        self.prefer_min = 140
+        self.prefer_max = 280
+        self.attack_range = 380
+
+        self.attack_cooldown = 1050
+        self.last_attack_time = 0
+        self.bullet_speed = 5.2
+
+        self.frame_walk = 0.0
+        self.walk_speed = 0.20
+        self.facing_right = False
+        self.current_sprite = bot_idle_left_img
+
+        self.death_fx_done = False
+
+    def get_center_x(self):
+        return self.x + self.current_sprite.get_width() / 2
+
+    def take_damage(self, amount):
+        if not self.alive:
+            return
+        self.hp -= int(amount)
+        if self.hp <= 0:
+            self.hp = 0
+            self.alive = False
+
+    def update_ai(self, player: Player, bullets):
+        if not self.alive:
+            return
+
+        if self.falling:
+            self.y += self.fall_speed
+            if self.y >= self.ground_y:
+                self.y = self.ground_y
+                self.falling = False
+            return
+
+        dx = player.get_center_x() - self.get_center_x()
+        dist = abs(dx)
+        now = pygame.time.get_ticks()
+
+        move_dir = 0
+        if dist > self.prefer_max:
+            move_dir = 1 if dx > 0 else -1
+        elif dist < self.prefer_min:
+            if random.random() < 0.55:
+                move_dir = -1 if dx > 0 else 1
+
+        LEFT_SAFE = 120
+        RIGHT_SAFE = WORLD_WIDTH - 240
+        if move_dir != 0:
+            next_x = self.x + move_dir * self.speed_x
+            if LEFT_SAFE < next_x < RIGHT_SAFE:
+                self.x = next_x
+                self.facing_right = move_dir > 0
+
+        # ✅ СТРЕЛЬБА ТОЛЬКО ЕСЛИ БОТ СМОТРИТ НА ИГРОКА (нет стрельбы спиной)
+        if (player.lane_index == self.lane_index) and (dist < self.attack_range):
+            looking_at_player = ((dx > 0 and self.facing_right) or (dx < 0 and not self.facing_right))
+            if looking_at_player:
+                if now - self.last_attack_time > self.attack_cooldown:
+                    self.last_attack_time = now
+                    direction = 1 if dx > 0 else -1
+                    vx = direction * self.bullet_speed
+                    muzzle_x = self.get_center_x() + direction * 10
+                    muzzle_y = self.y + self.current_sprite.get_height() * 0.45
+                    bullets.append(Bullet(muzzle_x, muzzle_y, vx, self.damage, self.lane_index))
+
+        self.frame_walk += self.walk_speed
+        if self.frame_walk >= len(bot_walk_right_imgs):
+            self.frame_walk = 0.0
+        idx = int(self.frame_walk)
+        self.current_sprite = bot_walk_right_imgs[idx] if self.facing_right else bot_walk_left_imgs[idx]
+
+        self.x = max(0, min(self.x, WORLD_WIDTH - self.current_sprite.get_width()))
+
+    def draw(self, surf, camera_x):
+        if not self.alive:
+            return
+        surf.blit(self.current_sprite, (self.x - camera_x, self.y))
+
+
+# ===================== БОСС (ДУКУ ЛОГИКА, СПРАЙТЫ ТВОИ) =====================
+class BossBase:
+    def __init__(self, x, lane_index):
+        self.x = float(x)
+        self.lane_index = lane_index
+
+        self.y = -220
+        self.fall_speed = 14
+        self.falling = True
+
+        self.hp_max = 380
+        self.hp = self.hp_max
+        self.alive = True
+
+        self.base_speed = 3.6
+        self.dash_speed = 5.8
+
+        self.damage = 14
+        self.attack_range = 90
+        self.attack_cooldown = 560
+        self.last_attack_time = 0
+
+        self.combo_left = 0
+        self.combo_gap_ms = 110
+        self.next_combo_time = 0
+
+        self.brain_cd = 240
+        self.next_brain = 0
+        self.mode = "stalk"
+        self.mode_until = 0
+
+        self.lane_change_cd = 520
+        self.last_lane_change = 0
+
+        self.facing_right = False
+        self.attacking = False
+        self.moving = False
+
+        self.frame_hit = 0.0
+        self.hit_speed = 0.33
+
+        self.frame_walk = 0.0
+        self.walk_speed = 0.24
+
+        self.current_sprite = boss_idle_left
+
+    def _ground_y(self):
+        return lanes[self.lane_index] + BOSS_Y_OFFSET
+
+    def get_center_x(self):
+        return self.x + self.current_sprite.get_width() / 2
+
+    def take_damage(self, amount):
+        if not self.alive:
+            return
+        self.hp -= int(amount)
+        if self.hp <= 0:
+            self.hp = 0
+            self.alive = False
+
+    def _pick_mode(self, now, player):
+        dx = player.get_center_x() - self.get_center_x()
+        dist = abs(dx)
+        r = random.random()
+
+        if dist > 360:
+            self.mode = "dash" if r < 0.65 else "stalk"
+            self.mode_until = now + random.randint(420, 720)
+        elif dist > 200:
+            if r < 0.35:
+                self.mode = "flank"
+            elif r < 0.65:
+                self.mode = "feint"
+            else:
+                self.mode = "stalk"
+            self.mode_until = now + random.randint(520, 920)
+        else:
+            if r < 0.45:
+                self.mode = "feint"
+            elif r < 0.70:
+                self.mode = "stalk"
+            else:
+                self.mode = "dash"
+            self.mode_until = now + random.randint(380, 650)
+
+    def update_ai(self, player: Player):
+        if not self.alive:
+            return
+
+        now = pygame.time.get_ticks()
+
+        if self.falling:
+            self.y += self.fall_speed
+            if self.y >= self._ground_y():
+                self.y = self._ground_y()
+                self.falling = False
+            return
+
+        if now >= self.next_brain:
+            self.next_brain = now + self.brain_cd
+            if now >= self.mode_until:
+                self._pick_mode(now, player)
+
+        dx = player.get_center_x() - self.get_center_x()
+        dist = abs(dx)
+
+        if (not self.attacking) and (now - self.last_lane_change >= self.lane_change_cd):
+            self.last_lane_change = now
+            r = random.random()
+            if dist > 240 and r < 0.70:
+                target_lane = player.lane_index
+            else:
+                if r < 0.25:
+                    target_lane = max(0, min(2, player.lane_index + random.choice([-1, 1])))
+                else:
+                    target_lane = self.lane_index
+
+            if target_lane != self.lane_index:
+                self.lane_index = target_lane
+                self.y = self._ground_y()
+
+        self.moving = False
+        predict = 0
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_d]:
+            predict = 1
+        elif keys[pygame.K_a]:
+            predict = -1
+
+        if self.mode == "stalk":
+            keep = 110
+            if dist > keep:
+                direction = 1 if dx > 0 else -1
+                self.x += direction * self.base_speed
+                self.facing_right = direction > 0
+                self.moving = True
+
+        elif self.mode == "feint":
+            if dist > 170:
+                direction = 1 if dx > 0 else -1
+                self.x += direction * (self.base_speed * 1.05)
+                self.facing_right = direction > 0
+                self.moving = True
+            else:
+                direction = -1 if dx > 0 else 1
+                self.x += direction * (self.base_speed * 0.95)
+                self.facing_right = direction > 0
+                self.moving = True
+
+        elif self.mode == "flank":
+            flank_ahead = 105 + 65 * predict
+            target_x = player.get_center_x() + flank_ahead
+            ddx = target_x - self.get_center_x()
+            direction = 1 if ddx > 0 else -1
+            if abs(ddx) > 18:
+                self.x += direction * (self.base_speed * 1.10)
+                self.facing_right = direction > 0
+                self.moving = True
+
+        elif self.mode == "dash":
+            if dist > 60:
+                direction = 1 if dx > 0 else -1
+                self.x += direction * self.dash_speed
+                self.facing_right = direction > 0
+                self.moving = True
+
+        can_hit_lane = (player.lane_index == self.lane_index)
+        if can_hit_lane and dist <= self.attack_range:
+            if self.combo_left > 0 and now >= self.next_combo_time:
+                player.take_damage(self.damage)
+                self.combo_left -= 1
+                self.next_combo_time = now + self.combo_gap_ms
+
+                self.attacking = True
+                self.frame_hit = 0.0
+                self.last_attack_time = now
+
+            elif (now - self.last_attack_time >= self.attack_cooldown) and (self.combo_left == 0):
+                self.last_attack_time = now
+                self.combo_left = random.choice([2, 3])
+                self.next_combo_time = now
+
+        if self.attacking:
+            self.frame_hit += self.hit_speed
+            hit_list = boss_attack_right if self.facing_right else boss_attack_left
+            if self.frame_hit >= len(hit_list):
+                self.frame_hit = 0.0
+                self.attacking = (self.combo_left > 0)
+            self.current_sprite = hit_list[int(self.frame_hit)]
+        else:
+            if self.moving:
+                self.frame_walk += self.walk_speed
+                walk_list = boss_walk_right if self.facing_right else boss_walk_left
+                if self.frame_walk >= len(walk_list):
+                    self.frame_walk = 0.0
+                self.current_sprite = walk_list[int(self.frame_walk)]
+            else:
+                self.frame_walk = 0.0
+                self.current_sprite = boss_idle_right if self.facing_right else boss_idle_left
+
+        LEFT_SAFE = 140
+        RIGHT_SAFE = WORLD_WIDTH - 260
+        self.x = max(LEFT_SAFE, min(self.x, RIGHT_SAFE))
+        self.y = self._ground_y()
+
+    def draw(self, surf, camera_x):
+        if not self.alive:
+            return
+        surf.blit(self.current_sprite, (self.x - camera_x, self.y))
+
+
+# ===================== UI =====================
+def draw_player_hp(player: Player):
+    pygame.draw.rect(screen, (80, 0, 0), (20, 20, 240, 14))
+    w = int(240 * (player.hp / max(1, player.hp_max)))
+    pygame.draw.rect(screen, (0, 220, 0), (20, 20, w, 14))
+    t = FONT_SMALL.render(f"HP: {player.hp}/{player.hp_max}", True, (230, 230, 230))
+    screen.blit(t, (20, 40))
+
+
+def draw_boss_hp(boss: BossBase):
+    bar_w = int(WIDTH * 0.70)
+    bar_h = 16
+    x = (WIDTH - bar_w) // 2
+    y = HEIGHT - bar_h - 18
+    pygame.draw.rect(screen, (60, 0, 0), (x, y, bar_w, bar_h))
+    w = int(bar_w * (boss.hp / max(1, boss.hp_max)))
+    pygame.draw.rect(screen, (180, 180, 255), (x, y, w, bar_h))
+    pygame.draw.rect(screen, (220, 220, 220), (x, y, bar_w, bar_h), 2)
+    name = FONT_SMALL.render("ГРАФ ДУКУ", True, (200, 200, 255))
+    screen.blit(name, (x, y - 18))
+
+
+# ===================== МЕНЮ =====================
+def main_menu_buttons():
+    btn_w = int(WIDTH * 0.38)
+    btn_h = int(HEIGHT * 0.11)
+    cx = WIDTH // 2
+    y1 = int(HEIGHT * 0.38)
+    y2 = int(HEIGHT * 0.52)
+    y3 = int(HEIGHT * 0.66)
+    b1 = pygame.Rect(0, 0, btn_w, btn_h); b1.center = (cx, y1)
+    b2 = pygame.Rect(0, 0, btn_w, btn_h); b2.center = (cx, y2)
+    b3 = pygame.Rect(0, 0, btn_w, btn_h); b3.center = (cx, y3)
+    return b1, b2, b3
+
+
+def draw_btn(rect, text, hover=False):
+    col = (40, 140, 255) if not hover else (80, 200, 255)
+    pygame.draw.rect(screen, (20, 20, 30), rect, border_radius=14)
+    pygame.draw.rect(screen, col, rect, 3, border_radius=14)
+    t = FONT_MED.render(text, True, (240, 240, 240))
+    screen.blit(t, t.get_rect(center=rect.center))
+
+
+def main_menu():
+    ensure_music_playing(volume_level)
+    btn_play, btn_settings, btn_exit = main_menu_buttons()
+
+    while True:
+        mx, my = pygame.mouse.get_pos()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if handle_global_keys(event):
+                continue
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if btn_play.collidepoint(event.pos):
+                    return "play"
+                if btn_settings.collidepoint(event.pos):
+                    return "settings"
+                if btn_exit.collidepoint(event.pos):
+                    pygame.quit(); sys.exit()
+
+        screen.blit(menu_bg, (0, 0))
+        draw_btn(btn_play, "ИГРАТЬ", btn_play.collidepoint(mx, my))
+        draw_btn(btn_settings, "НАСТРОЙКИ", btn_settings.collidepoint(mx, my))
+        draw_btn(btn_exit, "ВЫХОД", btn_exit.collidepoint(mx, my))
+        pygame.display.flip()
+        clock.tick(60)
+
+
+def settings_menu():
+    global volume_level
+    ensure_music_playing(volume_level)
+
+    bar = pygame.Rect(int(WIDTH * 0.30), int(HEIGHT * 0.45), int(WIDTH * 0.40), 18)
+    knob_r = 12
+    dragging = False
+    back = pygame.Rect(0, 0, int(WIDTH * 0.22), int(HEIGHT * 0.10))
+    back.center = (WIDTH // 2, int(HEIGHT * 0.72))
+
+    while True:
+        mx, my = pygame.mouse.get_pos()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if handle_global_keys(event):
+                continue
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                return
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if bar.collidepoint(event.pos):
+                    dragging = True
+                if back.collidepoint(event.pos):
+                    return
+
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                dragging = False
+
+            if event.type == pygame.MOUSEMOTION and dragging:
+                rel = (mx - bar.x) / max(1, bar.w)
+                volume_level = max(0.0, min(1.0, rel))
+                pygame.mixer.music.set_volume(volume_level)
+                update_sfx_volume()
+
+        screen.blit(settings_bg, (0, 0))
+        pygame.draw.rect(screen, (255, 255, 255), bar, 2, border_radius=8)
+        fill_w = int(bar.w * volume_level)
+        pygame.draw.rect(screen, (0, 200, 255), (bar.x, bar.y, fill_w, bar.h), border_radius=8)
+        knob_x = bar.x + fill_w
+        pygame.draw.circle(screen, (240, 240, 240), (knob_x, bar.centery), knob_r)
+
+        draw_btn(back, "НАЗАД", back.collidepoint(mx, my))
+        t = FONT_MED.render("ГРОМКОСТЬ", True, (240, 240, 240))
+        screen.blit(t, t.get_rect(center=(WIDTH // 2, int(HEIGHT * 0.38))))
+
+        pygame.display.flip()
+        clock.tick(60)
+
+
+# ===================== ДИАЛОГИ (ГЛАВА 2) =====================
+INTRO_DIALOG = [
+    ("Связь", "Связь на линии. Мы в зоне сепаратистов."),
+    ("Джедай", "Они не такие, как раньше. Будь готов к стрельбе."),
+    ("ГГ", "Понял. Двигаюсь дальше."),
+    ("Связь", "Глава 2: сектор опаснее. SPACE — дальше.")
+]
+WAVE2_DIALOG = [
+    ("Джедай", "Вторая волна будет жёстче. Не подпускай близко."),
+    ("ГГ", "Пусть попробуют."),
+    ("Связь", "Датчики ловят сильную цель…")
+]
+BOSS_DIALOG = [
+    ("Связь", "ВНИМАНИЕ! Вышел граф Дуку!"),
+    ("Граф Дуку", "Ты дошёл слишком далеко."),
+    ("ГГ", "Я закончу это здесь."),
+    ("Граф Дуку", "Тогда покажи, чего ты стоишь.")
+]
+
+
+def show_result_screen(won: bool):
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 190))
+
+    title = "ПОБЕДА!" if won else "ТЫ ПОГИБ..."
+    title_color = (0, 255, 150) if won else (255, 80, 80)
+
+    title_surf = FONT_BIG.render(title, True, title_color)
+    hint1 = FONT_MED.render("ENTER / SPACE — в меню", True, (230, 230, 230))
+    hint2 = FONT_MED.render("ESC — в меню", True, (200, 200, 200))
+
+    while True:
+        clock.tick(60)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if handle_global_keys(event):
+                continue
+            if event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_ESCAPE):
+                    return
+
+        screen.blit(overlay, (0, 0))
+        cx = WIDTH // 2
+        cy = HEIGHT // 2
+        screen.blit(title_surf, title_surf.get_rect(center=(cx, cy - 80)))
+        screen.blit(hint1, hint1.get_rect(center=(cx, cy + 10)))
+        screen.blit(hint2, hint2.get_rect(center=(cx, cy + 46)))
+        pygame.display.flip()
+
+
+# ===================== ИГРА =====================
+def fight_game():
+    global WORLD_WIDTH
+    ensure_music_playing(volume_level)
+
+    player = Player()
+    player.reset()
+
+    bullets = []
+    bots = []
+    particles = []
+    drops = []
+
+    boss = None
+    boss_spawned = False
+    camera_x = 0.0
+
+    def extend_world(mult):
+        global WORLD_WIDTH
+        WORLD_WIDTH = int(WIDTH * mult)
+
+    extend_world(14.0)
+
+    dialog_entries = INTRO_DIALOG[:]
+    dialog_index = 0
+    dialog_active = True
+    dialog_visible = 0.0
+    dialog_speed = 70.0
+    dialog_anim = 0.0
+
+    pending_teleport = False
+    pending_after_fn = None
+
+    def start_dialog(entries, after_teleport=False, after_fn=None):
+        nonlocal dialog_entries, dialog_index, dialog_active, dialog_visible, dialog_anim, pending_teleport, pending_after_fn
+        dialog_entries = entries[:]
+        dialog_index = 0
+        dialog_active = True
+        dialog_visible = 0.0
+        dialog_anim = 0.0
+        pending_teleport = after_teleport
+        pending_after_fn = after_fn
+
+    # ✅ ВОЛНЫ ГЛАВА 2: 12/12 и 16/16 (без толпы)
+    waves = [
+        {"kills_required": 12, "spawn_min": 2, "spawn_max": 3, "bot_hp": 85,  "bot_dmg": 6,  "bot_spd": 2.2},
+        {"kills_required": 16, "spawn_min": 2, "spawn_max": 3, "bot_hp": 95, "bot_dmg": 7, "bot_spd": 2.4},
+    ]
+    wave_idx = 0
+    killed_in_wave = 0
+    total_kills_needed = waves[wave_idx]["kills_required"]
+
+    spawn_cooldown = 1100
+    last_spawn = 0
+
+    def safe_spawn_x():
+        cfg_min = player.x + WIDTH * 0.6
+        cfg_max = player.x + WIDTH * 1.6
+
+        min_x = min(cfg_min, WORLD_WIDTH - 320)
+        max_x = min(cfg_max, WORLD_WIDTH - 260)
+
+        if min_x > max_x:
+            min_x = max(120, player.x - WIDTH * 0.2)
+            max_x = min(WORLD_WIDTH - 260, player.x + WIDTH * 0.7)
+
+        min_x = max(min_x, 200)
+        max_x = min(max_x, WORLD_WIDTH - 260)
+
+        if min_x > max_x:
+            min_x = max(200, WORLD_WIDTH - 520)
+            max_x = WORLD_WIDTH - 320
+
+        return int(min_x), int(max_x)
+
+    def spawn_pack():
+        cfg = waves[wave_idx]
+        n = random.randint(cfg["spawn_min"], cfg["spawn_max"])
+        min_x, max_x = safe_spawn_x()
+        for _ in range(n):
+            lane = random.randint(0, 2)
+            x = random.randint(min_x, max_x)
+            bots.append(Bot(x, lane, hp=cfg["bot_hp"], damage=cfg["bot_dmg"], speed=cfg["bot_spd"]))
+
+    def draw_world_only():
+        nonlocal camera_x
+        camera_x = player.x - WIDTH * 0.35
+        camera_x = max(0, min(camera_x, max(0, WORLD_WIDTH - WIDTH)))
+
+        bg_w = fight_bg.get_width()
+        offset = int(camera_x) % bg_w
+        screen.blit(fight_bg, (-offset, 0))
+        if -offset + bg_w < WIDTH:
+            screen.blit(fight_bg, (-offset + bg_w, 0))
+
+        for p in particles:
+            p.draw(screen, camera_x)
+        for d in drops:
+            d.draw(screen, camera_x)
+
+        draw_player_hp(player)
+
+        if not boss_spawned:
+            t = FONT_SMALL.render(
+                f"ГЛАВА 2  |  ВОЛНА {wave_idx+1}/2  |  УБИТО: {killed_in_wave}/{total_kills_needed}",
+                True, (220, 220, 220)
+            )
+            screen.blit(t, (20, 64))
+        else:
+            if boss is not None and boss.alive:
+                draw_boss_hp(boss)
+
+        for b in bots:
+            b.draw(screen, camera_x)
+        if boss_spawned and boss is not None:
+            boss.draw(screen, camera_x)
+
+        player.draw(screen, camera_x)
+        for bullet in bullets:
+            bullet.draw(screen, camera_x)
+
+    def do_teleport_reset():
+        player.x = 200
+        player.lane_index = 1
+        player.y = lanes[player.lane_index] + PLAYER_Y_OFFSET
+        bullets.clear()
+
+    def clear_wave_enemies():
+        nonlocal bots, bullets
+        bots = []
+        bullets = []
+
+    running = True
+    won = False
+
+    while running:
+        dt = clock.tick(60)
+        dt_sec = dt / 1000.0
+
+        if dialog_active and 0 <= dialog_index < len(dialog_entries):
+            cur_speaker, cur_text = dialog_entries[dialog_index]
+        else:
+            cur_speaker, cur_text = "", ""
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+
+            if handle_global_keys(event):
+                continue
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                    won = False
+
+                if dialog_active and event.key == pygame.K_SPACE:
+                    if dialog_visible < len(cur_text):
+                        dialog_visible = float(len(cur_text))
+                    else:
+                        dialog_index += 1
+                        if dialog_index >= len(dialog_entries):
+                            dialog_active = False
+                        else:
+                            dialog_visible = 0.0
+                    continue
+
+                if not dialog_active:
+                    if event.key == pygame.K_w:
+                        player.change_lane(-1)
+                    if event.key == pygame.K_s:
+                        player.change_lane(1)
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if not dialog_active:
+                    player.start_attack()
+
+        keys = pygame.key.get_pressed()
+        player.update(keys, can_control=(not dialog_active))
+
+        if dialog_active and cur_text:
+            dialog_visible += dialog_speed * dt_sec
+            dialog_visible = min(dialog_visible, float(len(cur_text)))
+            if dialog_anim < 1.0:
+                dialog_anim += dt_sec * 4.0
+                dialog_anim = min(1.0, dialog_anim)
+
+        if (not dialog_active) and pending_teleport:
+            pending_teleport = False
+
+            def mid():
+                do_teleport_reset()
+                if pending_after_fn:
+                    pending_after_fn()
+
+            fade_transition(draw_world_only, mid_action_fn=mid, fade_ms=300)
+            pending_after_fn = None
+
+        now = pygame.time.get_ticks()
+
+        # ✅ СПАВН ТОЛЬКО ВНЕ ДИАЛОГА
+        alive_bots = [b for b in bots if b.alive]
+        if (not dialog_active) and (not boss_spawned):
+            if killed_in_wave < total_kills_needed:
+                if len(alive_bots) == 0:
+                    spawn_pack()
+                    last_spawn = now
+                elif now - last_spawn > spawn_cooldown and len(alive_bots) <= 1:
+                    spawn_pack()
+                    last_spawn = now
+
+        # ✅ AI/стрельба/пули ТОЛЬКО ВНЕ ДИАЛОГА
+        if not dialog_active:
+            for b in bots:
+                b.update_ai(player, bullets)
+
+            if player.attacking and not player.hit_registered:
+                targets = [b for b in bots if b.alive]
+                if boss_spawned and boss is not None and boss.alive:
+                    targets.append(boss)
+
+                for t in targets:
+                    if hasattr(t, "lane_index") and t.lane_index != player.lane_index:
+                        continue
+
+                    dx = (t.get_center_x() - player.get_center_x())
+                    if abs(dx) <= player.attack_range:
+                        if (dx > 0 and player.facing_right) or (dx < 0 and not player.facing_right):
+                            t.take_damage(player.damage)
+                            player.hit_registered = True
+
+                            if SWORD_SFX is not None:
+                                update_sfx_volume()
+                                SWORD_CHANNEL.play(SWORD_SFX)
+
+                            if isinstance(t, Bot) and (not t.alive) and (not t.death_fx_done):
+                                t.death_fx_done = True
+                                spawn_death_effects(
+                                    t.get_center_x(),
+                                    t.y + t.current_sprite.get_height() * 0.65,
+                                    particles,
+                                    drops
+                                )
+                                killed_in_wave += 1
+                            break
+
+            for bullet in bullets:
+                bullet.update(player)
+            bullets = [b for b in bullets if b.active]
+
+        for p in particles:
+            p.update()
+        particles = [p for p in particles if p.alive]
+
+        for d in drops:
+            d.update()
+            d.try_pickup(player)
+        drops = [d for d in drops if d.active]
+
+        if not player.alive:
+            running = False
+            won = False
+
+        # ======= ПЕРЕХОД ВОЛН =======
+        if (not dialog_active) and (not boss_spawned):
+            if wave_idx == 0 and killed_in_wave >= waves[0]["kills_required"]:
+                extend_world(16.0)
+                wave_idx = 1
+                killed_in_wave = 0
+                total_kills_needed = waves[wave_idx]["kills_required"]
+                spawn_cooldown = 1050
+                clear_wave_enemies()
+                start_dialog(WAVE2_DIALOG, after_teleport=True)
+
+            elif wave_idx == 1 and killed_in_wave >= waves[1]["kills_required"]:
+                extend_world(18.0)
+                clear_wave_enemies()
+                boss_spawned = True
+
+                def spawn_boss_mid():
+                    nonlocal boss
+                    boss = BossBase(560, 1)
+
+                start_dialog(BOSS_DIALOG, after_teleport=True, after_fn=spawn_boss_mid)
+
+        if boss_spawned and boss is not None and boss.alive and (not dialog_active):
+            boss.update_ai(player)
+
+        if boss_spawned and boss is not None and (not boss.alive):
+            running = False
+            won = True
+
+        camera_x = player.x - WIDTH * 0.35
+        camera_x = max(0, min(camera_x, max(0, WORLD_WIDTH - WIDTH)))
+
+        bg_w = fight_bg.get_width()
+        offset = int(camera_x) % bg_w
+        screen.blit(fight_bg, (-offset, 0))
+        if -offset + bg_w < WIDTH:
+            screen.blit(fight_bg, (-offset + bg_w, 0))
+
+        for p in particles:
+            p.draw(screen, camera_x)
+        for d in drops:
+            d.draw(screen, camera_x)
+
+        draw_player_hp(player)
+
+        if not boss_spawned:
+            t = FONT_SMALL.render(
+                f"ГЛАВА 2  |  ВОЛНА {wave_idx+1}/2  |  УБИТО: {killed_in_wave}/{total_kills_needed}",
+                True, (220, 220, 220)
+            )
+            screen.blit(t, (20, 64))
+        else:
+            if boss is not None and boss.alive:
+                draw_boss_hp(boss)
+
+        for b in bots:
+            b.draw(screen, camera_x)
+
+        if boss_spawned and boss is not None:
+            boss.draw(screen, camera_x)
+
+        player.draw(screen, camera_x)
+        for bullet in bullets:
+            bullet.draw(screen, camera_x)
+
+        if dialog_active and cur_text:
+            draw_dialog_panel(screen, cur_speaker, cur_text, dialog_visible, dialog_anim)
+
+        pygame.display.flip()
+
+    show_result_screen(won)
+
+
+# ===================== MAIN =====================
+if __name__ == "__main__":
+    ensure_music_playing(volume_level)
+    while True:
+        choice = main_menu()
+        if choice == "play":
+            fight_game()
+        elif choice == "settings":
+            settings_menu()
